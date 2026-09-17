@@ -1,0 +1,96 @@
+name: Detect New Breeze Release
+
+on:
+  schedule:
+    # GitHub schedules use UTC. This checks every six hours at an offset
+    # that avoids the busiest top-of-hour window.
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: auto-sign-new-breeze-release
+  cancel-in-progress: false
+
+jobs:
+  detect:
+    name: Check for an unsigned Breeze release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      should-sign: ${{ steps.release.outputs.should-sign }}
+    steps:
+      - name: Compare official and signed releases
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          api_headers=(
+            -H "Authorization: Bearer ${GH_TOKEN}"
+            -H "Accept: application/vnd.github+json"
+            -H "X-GitHub-Api-Version: 2022-11-28"
+          )
+
+          official_json="$(curl --fail --silent --show-error --location \
+            "${api_headers[@]}" \
+            https://api.github.com/repos/lanternops/breeze/releases/latest)"
+
+          tag="$(jq -er '.tag_name' <<<"${official_json}")"
+          version="${tag#v}"
+
+          if [[ "${tag}" != "v${version}" ]] || \
+             ! [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+            echo "::error::Official latest release tag '${tag}' is not a supported vX.Y.Z tag"
+            exit 1
+          fi
+
+          status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+            "${api_headers[@]}" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/v${version}")"
+
+          case "${status}" in
+            200)
+              should_sign=false
+              message="v${version} is already signed in ${GITHUB_REPOSITORY}"
+              ;;
+            404)
+              should_sign=true
+              message="v${version} is new and will be queued for approval"
+              ;;
+            *)
+              echo "::error::Could not check ${GITHUB_REPOSITORY} for v${version} (HTTP ${status})"
+              exit 1
+              ;;
+          esac
+
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "should-sign=${should_sign}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "## Breeze release detection"
+            echo
+            echo "${message}."
+            echo
+            echo "- Official release: \`${tag}\`"
+            echo "- Signing mode: \`azure-artifact-signing\`"
+            echo "- Platforms: \`windows\`"
+            echo "- Approval environment: \`signing\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  sign:
+    name: Queue Windows signing for approval
+    needs: detect
+    if: needs.detect.outputs.should-sign == 'true'
+    permissions:
+      contents: write
+      id-token: write
+    uses: ./.github/workflows/sign-release.yml
+    with:
+      version: ${{ needs.detect.outputs.version }}
+      signing-mode: azure-artifact-signing
+      platforms: windows
+      dry-run: false
+    secrets: inherit
