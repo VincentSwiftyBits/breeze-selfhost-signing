@@ -1,0 +1,9 @@
+Host truenas-breeze
+  HostName 10.0.1.119
+  User truenas_admin
+  IdentityFile /home/runner/.ssh/id_ed25519
+  IdentitiesOnly yes
+  BatchMode yes
+  StrictHostKeyChecking yes
+  UserKnownHostsFile /home/runner/.ssh/known_hosts
+

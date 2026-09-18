@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+[[ $# -eq 2 ]] || {
+  echo "usage: $0 <dev|uat|production> <X.Y.Z>" >&2
+  exit 64
+}
+
+exec ssh -F /home/runner/.ssh/config truenas-breeze "promote $1 $2"
+
