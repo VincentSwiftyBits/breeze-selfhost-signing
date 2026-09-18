@@ -992,6 +992,39 @@ jobs:
           official_trust = {
               a["name"]: a.get("platformTrust") for a in official.get("assets", [])
           }
+          required_image_repositories = {
+              "api": "ghcr.io/lanternops/breeze/api",
+              "binaries": "ghcr.io/lanternops/breeze/binaries",
+              "portal": "ghcr.io/lanternops/breeze/portal",
+              "web": "ghcr.io/lanternops/breeze/web",
+          }
+          official_images = official.get("images")
+          if not isinstance(official_images, list):
+              raise SystemExit(
+                  "verified official manifest has no image inventory — refusing to "
+                  "publish a release that cannot upgrade the full Breeze stack"
+              )
+          images_by_name = {}
+          for image in official_images:
+              if not isinstance(image, dict):
+                  raise SystemExit("verified official manifest contains a malformed image entry")
+              name = image.get("name")
+              repository = image.get("repository")
+              digest = image.get("digest")
+              if name in images_by_name:
+                  raise SystemExit(f"verified official manifest repeats image {name!r}")
+              if not isinstance(digest, str) or not digest.startswith("sha256:") or len(digest) != 71:
+                  raise SystemExit(f"verified official manifest has invalid digest for image {name!r}")
+              images_by_name[name] = image
+          for name, repository in required_image_repositories.items():
+              image = images_by_name.get(name)
+              if image is None:
+                  raise SystemExit(f"verified official manifest is missing required image {name}")
+              if image.get("repository") != repository:
+                  raise SystemExit(
+                      f"verified official manifest moved {name} to unexpected repository "
+                      f"{image.get('repository')!r}"
+                  )
           mirrored = [
               line
               for line in (attest_dir / "mirrored.txt").read_text(encoding="utf8").splitlines()
@@ -1051,13 +1084,15 @@ jobs:
               "release": f"v{os.environ['SIGN_VERSION']}",
               "sourceCommit": os.environ["SOURCE_COMMIT"],
               "assets": assets,
+              "images": sorted(official_images, key=lambda image: image["name"]),
           }
           (release_dir / "release-artifact-manifest.json").write_text(
               json.dumps(manifest, indent=2, sort_keys=True) + "\n"
           )
           print(
               f"manifest written with {len(assets)} assets "
-              f"({len(attested)} attested, {len(mirrored)} mirrored)"
+              f"({len(attested)} attested, {len(mirrored)} mirrored) and "
+              f"{len(official_images)} verified core images"
           )
           for entry in assets:
               print(f"  {entry['platformTrust']:<45} {entry['name']}")
