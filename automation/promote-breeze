@@ -7,4 +7,3 @@ set -euo pipefail
 }
 
 exec ssh -F /home/runner/.ssh/config truenas-breeze "promote $1 $2"
-

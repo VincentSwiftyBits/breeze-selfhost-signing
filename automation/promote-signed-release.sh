@@ -170,4 +170,3 @@ done
 
 echo "promotion did not verify within 10 minutes: environment=${environment} version=${version}" >&2
 exit 70
-

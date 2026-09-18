@@ -20,4 +20,3 @@ if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; 
 fi
 
 exec sudo -n "$DEPLOY_SCRIPT" "$environment" "$version"
-

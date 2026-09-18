@@ -6,4 +6,3 @@ Host truenas-breeze
   BatchMode yes
   StrictHostKeyChecking yes
   UserKnownHostsFile /home/runner/.ssh/known_hosts
-
