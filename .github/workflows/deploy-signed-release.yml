@@ -1,0 +1,58 @@
+name: Deploy Signed Breeze Release
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Breeze version without the leading v
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Breeze version without the leading v
+        required: true
+        type: string
+
+concurrency:
+  group: deploy-signed-breeze-${{ inputs.version }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-dev:
+    name: Promote signed installers to Dev
+    runs-on: [self-hosted, linux, x64, swiftybits-truenas]
+    environment: breeze-dev
+    timeout-minutes: 20
+    steps:
+      - name: Promote and verify Dev
+        env:
+          BREEZE_VERSION: ${{ inputs.version }}
+        run: /home/runner/ops/promote-breeze dev "${BREEZE_VERSION}"
+
+  deploy-uat:
+    name: Promote signed installers to UAT
+    needs: deploy-dev
+    runs-on: [self-hosted, linux, x64, swiftybits-truenas]
+    environment: breeze-uat
+    timeout-minutes: 20
+    steps:
+      - name: Promote and verify UAT
+        env:
+          BREEZE_VERSION: ${{ inputs.version }}
+        run: /home/runner/ops/promote-breeze uat "${BREEZE_VERSION}"
+
+  deploy-production:
+    name: Promote signed installers to Production
+    needs: deploy-uat
+    runs-on: [self-hosted, linux, x64, swiftybits-truenas]
+    environment: breeze-production
+    timeout-minutes: 20
+    steps:
+      - name: Promote and verify Production
+        env:
+          BREEZE_VERSION: ${{ inputs.version }}
+        run: /home/runner/ops/promote-breeze production "${BREEZE_VERSION}"

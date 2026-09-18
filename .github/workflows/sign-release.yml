@@ -1244,3 +1244,11 @@ jobs:
             echo ""
             echo "Map each variable in your compose file's \`api\` service \`environment:\` block — a value in \`.env\` alone never reaches the container. Full walkthrough: the \"Sign Your Own Agent Packages\" guide in the Breeze docs."
           } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: Promote signed installers
+    needs: [validate, publish]
+    if: ${{ !cancelled() && needs.publish.result == 'success' && inputs.dry-run == false }}
+    uses: ./.github/workflows/deploy-signed-release.yml
+    with:
+      version: ${{ needs.validate.outputs.version }}
