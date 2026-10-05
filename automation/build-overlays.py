@@ -50,22 +50,6 @@ def main():
         staged=run(['docker','run','--rm','--network','none','--read-only','--entrypoint','sh',tag,
                     '-c','sha256sum /binaries/agent/breeze-agent.msi']).split()[0]
         if staged!=msi_sha: raise RuntimeError('Binary initializer does not contain the verified signed MSI')
-        api=tmp/'api'; api.mkdir()
-        patch=(OVERLAYS/'bookcentral.js').read_bytes()
-        tests=(OVERLAYS/'test-bookcentral.cjs').read_bytes()
-        gateway_patch=(OVERLAYS/'openai-tool-search.cjs').read_bytes()
-        gateway_tests=(OVERLAYS/'test-openai-tool-search.cjs').read_bytes()
-        key=digest([bases['api'],patch,tests,gateway_patch,gateway_tests]); tag=f'swiftybits-breeze-api:{version}-integrations-{key}'
-        if not exists(tag,key,version,commit,bases['api']):
-            user=run(['docker','image','inspect',bases['api'],'--format','{{.Config.User}}']).strip() or 'root'
-            if not re.fullmatch(r'[A-Za-z0-9_:-]+',user): raise RuntimeError('Base API image has unexpected runtime user')
-            (api/'bookcentral.js').write_bytes(patch)
-            (api/'test-bookcentral.cjs').write_bytes(tests)
-            (api/'openai-tool-search.cjs').write_bytes(gateway_patch)
-            (api/'test-openai-tool-search.cjs').write_bytes(gateway_tests)
-            (api/'Dockerfile').write_text(f'FROM {bases["api"]}\nUSER root\nCOPY bookcentral.js test-bookcentral.cjs openai-tool-search.cjs test-openai-tool-search.cjs /tmp/\nRUN bundle=$(find /app/dist /app/apps/api/dist -name index.cjs 2>/dev/null); node /tmp/test-bookcentral.cjs "$bundle" && node /tmp/bookcentral.js && node /tmp/test-openai-tool-search.cjs "$bundle" --baseline && node /tmp/openai-tool-search.cjs "$bundle" && node /tmp/test-openai-tool-search.cjs "$bundle" && node --check "$bundle" && rm /tmp/bookcentral.js /tmp/test-bookcentral.cjs /tmp/openai-tool-search.cjs /tmp/test-openai-tool-search.cjs\nUSER {user}\n')
-            build(['docker','build','--label',f'io.swiftybits.breeze.overlay-sha={key}','--label',f'io.swiftybits.breeze.base={bases["api"]}','--label',f'org.opencontainers.image.version={version}','--label',f'org.opencontainers.image.revision={commit}','-t',tag,str(api)])
-        result['images']['api']=tag; result['provenance']['overlays']['bookcentral']=key
         if spec.get('vendorhub'):
             files=[p for p in sorted(OVERLAYS.rglob('*')) if p.is_file() and (p.name=='vendorhub.py' or 'vendorhub' in p.parts)]
             key=digest([bases['web'],commit]+[p.read_bytes() for p in files]); tag=f'swiftybits/breeze-web:{version}-vendorhub-{key}'
@@ -89,5 +73,32 @@ def main():
             (ctx/'Dockerfile').write_text(f'FROM {webbase}\nUSER root\nCOPY web-timeout.js /tmp/web-timeout.js\nRUN node /tmp/web-timeout.js && rm /tmp/web-timeout.js\nUSER {user}\n')
             build(['docker','build','--label',f'io.swiftybits.breeze.overlay-sha={key}','--label',f'io.swiftybits.breeze.base={webbase}','--label',f'org.opencontainers.image.version={version}','--label',f'org.opencontainers.image.revision={commit}','-t',tag,str(ctx)])
         result['images']['web']=tag; result['provenance']['overlays']['ai-timeout']=key
+        # Use the host application's existing authenticated client, including token refresh.
+        # Derive its asset from the final web image so Dev custom builds also match.
+        extractor = "const fs=require('fs');const dir=['/app/apps/web/dist/client/_astro','/app/dist/client/_astro'].find(p=>fs.existsSync(p));if(!dir)throw Error('Web asset directory not found');const files=fs.readdirSync(dir).filter(n=>/^registry\\.[A-Za-z0-9_-]+\\.js$/.test(n));let refs=[];for(const f of files){const s=fs.readFileSync(dir+'/'+f,'utf8');const m=s.match(/import\\{O as [^}]+\\}from\"\\.\\/(auth\\.[A-Za-z0-9_-]+\\.js)\"/);if(m)refs.push(m[1]);}refs=[...new Set(refs)];if(refs.length!==1)throw Error('Host extension auth client layout changed');const src=fs.readFileSync(dir+'/'+refs[0],'utf8');if(!src.includes('skipOrgIdInjection')||!src.includes('accessToken')||!src.includes(' as O,'))throw Error('Host authenticated client contract changed');process.stdout.write('/_astro/'+refs[0]);"
+        auth_module=run(['docker','run','--rm','--network','none','--read-only','--entrypoint','node',tag,'-e',extractor]).strip()
+        if not re.fullmatch(r'/_astro/auth\.[A-Za-z0-9_-]+\.js', auth_module):
+            raise RuntimeError('Invalid host auth module asset')
+        api=tmp/'api'; api.mkdir()
+        patch=(OVERLAYS/'bookcentral.js').read_bytes()
+        tests=(OVERLAYS/'test-bookcentral.cjs').read_bytes()
+        gateway_patch=(OVERLAYS/'openai-tool-search.cjs').read_bytes()
+        gateway_tests=(OVERLAYS/'test-openai-tool-search.cjs').read_bytes()
+        workspace_patch=(OVERLAYS/'workspace-auth.cjs').read_bytes()
+        workspace_tests=(OVERLAYS/'test-workspace-auth.cjs').read_bytes()
+        key=digest([bases['api'],patch,tests,gateway_patch,gateway_tests,workspace_patch,workspace_tests,auth_module]); tag=f'swiftybits-breeze-api:{version}-integrations-{key}'
+        if not exists(tag,key,version,commit,bases['api']):
+            user=run(['docker','image','inspect',bases['api'],'--format','{{.Config.User}}']).strip() or 'root'
+            if not re.fullmatch(r'[A-Za-z0-9_:-]+',user): raise RuntimeError('Base API image has unexpected runtime user')
+            (api/'bookcentral.js').write_bytes(patch)
+            (api/'test-bookcentral.cjs').write_bytes(tests)
+            (api/'openai-tool-search.cjs').write_bytes(gateway_patch)
+            (api/'test-openai-tool-search.cjs').write_bytes(gateway_tests)
+            (api/'workspace-auth.cjs').write_bytes(workspace_patch)
+            (api/'test-workspace-auth.cjs').write_bytes(workspace_tests)
+            (api/'Dockerfile').write_text(f'FROM {bases["api"]}\nUSER root\nCOPY bookcentral.js test-bookcentral.cjs openai-tool-search.cjs test-openai-tool-search.cjs workspace-auth.cjs test-workspace-auth.cjs /tmp/\nRUN bundle=$(find /app/dist /app/apps/api/dist -name index.cjs 2>/dev/null); node /tmp/test-bookcentral.cjs "$bundle" && node /tmp/bookcentral.js && node /tmp/test-openai-tool-search.cjs "$bundle" --baseline && node /tmp/openai-tool-search.cjs "$bundle" && node /tmp/test-openai-tool-search.cjs "$bundle" && node /tmp/test-workspace-auth.cjs /app/apps/api/ee/workspace/dist/web/index.js && node /tmp/workspace-auth.cjs /app/apps/api/ee/workspace/dist/web/index.js {auth_module} && node --check /app/apps/api/ee/workspace/dist/web/index.js && node --check "$bundle" && rm /tmp/workspace-auth.cjs /tmp/test-workspace-auth.cjs /tmp/bookcentral.js /tmp/test-bookcentral.cjs /tmp/openai-tool-search.cjs /tmp/test-openai-tool-search.cjs\nUSER {user}\n')
+            build(['docker','build','--label',f'io.swiftybits.breeze.overlay-sha={key}','--label',f'io.swiftybits.breeze.base={bases["api"]}','--label',f'org.opencontainers.image.version={version}','--label',f'org.opencontainers.image.revision={commit}','-t',tag,str(api)])
+        result['images']['api']=tag; result['provenance']['overlays']['bookcentral']=key
+        result['provenance']['overlays']['workspace-auth-module']=auth_module
     print(json.dumps(result))
 if __name__=='__main__': main()
