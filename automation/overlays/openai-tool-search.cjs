@@ -1,6 +1,8 @@
 const fs = require('node:fs');
 
 function patch(source) {
+  const zod = source.match(/toolResultBlock = (\w+)\.z\.object\(/)?.[1];
+  if (!zod) throw new Error('OpenAI tool-result schema was not recognized');
   const changes = [
     ['imageBlock, toolUseBlock, toolResultBlock, droppedBlock',
      'imageBlock, toolUseBlock, toolReferenceBlock, toolResultBlock, droppedBlock'],
@@ -11,7 +13,9 @@ function patch(source) {
     ['b.type === "text" ? b.text : "[image omitted]"',
      'b.type === "text" ? b.text : b.type === "tool_reference" ? `Available tool: ${b.tool_name}` : "[image omitted]"'],
   ];
-  for (const [before, after] of changes) {
+  for (let [before, after] of changes) {
+    before = before.replaceAll('import_zod102', zod);
+    after = after.replaceAll('import_zod102', zod);
     if (source.split(before).length !== 2) throw new Error('OpenAI tool-search gateway layout changed; review before deployment');
     source = source.replace(before, after);
   }

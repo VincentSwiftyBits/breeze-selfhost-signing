@@ -11,6 +11,9 @@ assert(start >= 0 && end > start, 'Gateway source layout must be recognized');
 class GatewayError extends Error { constructor(status, type, code, message) { super(message); this.status=status; } }
 const context = vm.createContext({require:createRequire(bundle), GatewayError, GATEWAY_MAX_TOOLS:512,
   init_limits(){},init_types4(){},__esm:definitions=>()=>Object.values(definitions)[0]()});
+for (const match of source.slice(start,end).matchAll(/\b(init_\w+)\(\);/g)) {
+  if (match[1] !== 'init_translateRequest') context[match[1]] = () => {};
+}
 vm.runInContext(source.slice(start,end)+'\ninit_translateRequest();',context);
 
 const request = {model:'gpt-4.1-nano',max_tokens:256,
