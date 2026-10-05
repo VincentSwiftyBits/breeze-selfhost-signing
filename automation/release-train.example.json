@@ -1,8 +1,8 @@
 {
   "backup_root": "/path/to/protected/backups",
   "environments": {
-    "dev": {"app": "breeze-rmm-dev", "url": "https://dev.example.com", "vendorhub": true},
-    "uat": {"app": "breeze-rmm-uat", "url": "https://uat.example.com", "vendorhub": false},
-    "production": {"app": "breeze-rmm", "url": "https://prod.example.com", "vendorhub": false}
+    "dev": {"app": "breeze-rmm-dev", "url": "https://dev.example.com", "vendorhub": true, "ai_tool_search": true},
+    "uat": {"app": "breeze-rmm-uat", "url": "https://uat.example.com", "vendorhub": false, "ai_tool_search": true},
+    "production": {"app": "breeze-rmm", "url": "https://prod.example.com", "vendorhub": false, "ai_tool_search": true}
   }
 }

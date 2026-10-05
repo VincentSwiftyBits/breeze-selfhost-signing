@@ -151,6 +151,8 @@ def desired_config(current, version, images, settings):
     for key in ('APP_VERSION', 'BREEZE_VERSION', 'BINARY_VERSION'):
         env[key] = version
     env['AGENT_AUTO_PROMOTE'] = 'true'
+    if settings.get('ai_tool_search') is True:
+        env['AI_TOOL_SEARCH'] = 'on'
     public_url = settings.get('url', env['PUBLIC_APP_URL']).rstrip('/')
     env['PUBLIC_APP_URL'] = public_url
     env['PUBLIC_WEB_URL'] = public_url
