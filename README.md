@@ -40,6 +40,44 @@ Your agents never trust this repo's key directly — your Breeze API re-signs
 update manifests with its per-deployment key (standard since the BYO-signing
 release), so fleet trust is unchanged.
 
+## Complete application release train
+
+The release detector checks every 15 minutes. New signed releases deploy through
+Dev, UAT, and Production; already signed releases are reconciled again to recover
+incomplete application deployments. Signing retains its protected environment.
+Application stages progress automatically after verification, with one release
+train at a time and checks that reject superseded or downgraded targets.
+
+The root-owned host entry point in `automation/promote-signed-release.sh` invokes
+`promote-full-release.py`. Install the promoter, builder, BookCentral smoke check,
+and `overlays/` together. Keep deployment settings in the protected sibling
+`config/release-train.json`; `automation/release-train.example.json` shows its
+shape. Environment URLs, credentials, storage, ports, and runner SSH restrictions
+remain host configuration.
+
+Each deployment verifies the signed manifest and every published artifact, pulls
+the exact API/web/portal/binaries digests, and rebuilds preserved customizations.
+The binary initializer embeds the verified signed Windows MSI before API startup;
+the stock image's unsigned local MSI must never become the download served by the
+application. Prepared image IDs are frozen and Compose uses those local images.
+`AGENT_AUTO_PROMOTE=true` advances the download and agent-update target on each
+release. Platform packages must exist in the signed release; Windows-only signing
+does not produce macOS agent packages. Device availability and update policy still
+govern when an installed agent applies an offered update.
+
+Success requires healthy services, matching image IDs, the actual API and baked
+web version, readable local binaries, the current signed Windows download target,
+the public MSI's exact signed SHA-256, and reachable web/Quick Support/portal pages.
+Canonical environment URLs also repair Quick Support links. Local runtime drift
+triggers repair; public-network or integration outages block verification without
+restarting an otherwise healthy stack.
+
+Before changing the stack, the host saves a validated PostgreSQL dump, API-data
+archive, configuration, and checksums. Migrations have a 30-minute startup grace
+period. Database recovery remains an operator action because automatically
+rewinding a live database could discard intervening writes. See
+[`automation/UNIFIED_RELEASE_DESIGN.md`](automation/UNIFIED_RELEASE_DESIGN.md).
+
 ## Quickstart
 
 1. Click **Use this template** (a private copy is fine — the workflow only

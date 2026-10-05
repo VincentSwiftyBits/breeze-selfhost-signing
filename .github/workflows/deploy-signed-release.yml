@@ -1,4 +1,4 @@
-name: Deploy Signed Breeze Release
+name: Deploy Complete Breeze Release
 
 on:
   workflow_call:
@@ -15,18 +15,51 @@ on:
         type: string
 
 concurrency:
-  group: deploy-signed-breeze-${{ inputs.version }}
+  group: deploy-breeze-applications
   cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
+  validate-target:
+    name: Validate the latest signed release target
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      deploy: ${{ steps.latest.outputs.deploy }}
+    steps:
+      - name: Check the current signed release
+        id: latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! [[ "$TARGET_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Application deployment requires a stable X.Y.Z version"
+            exit 1
+          fi
+          latest_json="$(curl --fail --silent --show-error --location --max-time 30 \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/latest")"
+          latest="$(jq -er '.tag_name' <<<"$latest_json")"
+          if [[ "$latest" != "v${TARGET_VERSION}" ]]; then
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+            echo "Superseded target v${TARGET_VERSION}; latest signed release is ${latest}. No deployment performed." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "deploy=true" >> "$GITHUB_OUTPUT"
+
   deploy-dev:
-    name: Promote signed installers to Dev
+    needs: validate-target
+    if: needs.validate-target.outputs.deploy == 'true'
+    name: Promote complete applications to Dev
     runs-on: [self-hosted, linux, x64, swiftybits-truenas]
-    environment: breeze-dev
-    timeout-minutes: 20
+    timeout-minutes: 60
     steps:
       - name: Promote and verify Dev
         env:
@@ -34,11 +67,10 @@ jobs:
         run: /home/runner/ops/promote-breeze dev "${BREEZE_VERSION}"
 
   deploy-uat:
-    name: Promote signed installers to UAT
+    name: Promote complete applications to UAT
     needs: deploy-dev
     runs-on: [self-hosted, linux, x64, swiftybits-truenas]
-    environment: breeze-uat
-    timeout-minutes: 20
+    timeout-minutes: 60
     steps:
       - name: Promote and verify UAT
         env:
@@ -46,11 +78,10 @@ jobs:
         run: /home/runner/ops/promote-breeze uat "${BREEZE_VERSION}"
 
   deploy-production:
-    name: Promote signed installers to Production
+    name: Promote complete applications to Production
     needs: deploy-uat
     runs-on: [self-hosted, linux, x64, swiftybits-truenas]
-    environment: breeze-production
-    timeout-minutes: 20
+    timeout-minutes: 60
     steps:
       - name: Promote and verify Production
         env:
