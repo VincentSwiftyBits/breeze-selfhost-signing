@@ -248,6 +248,17 @@ if(roots.length!==1)process.exit(1);visit(roots[0]);if(!found)process.exit(1);''
             input=(HERE / 'bookcentral-smoke.py').read_bytes(), stdout=subprocess.DEVNULL)
 
 
+def needs_update(current, desired, app, version, images, settings, expected_ids):
+    if current != desired:
+        return True
+    try:
+        verify(app, version, images, settings, expected_ids)
+        return False
+    except (ValueError, OSError, subprocess.CalledProcessError, urllib.error.URLError):
+        # Failed Compose jobs may have saved the target config before starting all services.
+        return True
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('environment', choices=['dev', 'uat', 'production'])
@@ -297,7 +308,7 @@ def main():
             expected_plan = {'version': args.version, 'sourceCommit': manifest['sourceCommit'], 'images': images,
                              'expectedImageIds': expected_ids, 'overlays': overlays}
             (cache / (app + '-plan.json')).write_text(json.dumps(expected_plan, indent=2))
-            if desired != current and not args.verify_only:
+            if not args.verify_only and needs_update(current, desired, app, args.version, images, settings, expected_ids):
                 backup(app, current, Path(settings_all['backup_root']))
                 app_update(client, app, desired)
             deadline = time.monotonic() + 600

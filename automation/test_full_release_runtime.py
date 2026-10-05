@@ -15,6 +15,22 @@ p = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(p)
 
 
+class ReconciliationTests(unittest.TestCase):
+    def test_current_healthy_release_does_not_restart(self):
+        with patch.object(p, 'verify') as verify:
+            self.assertFalse(p.needs_update({}, {}, 'test', '0.121.0', {}, {}, {}))
+            verify.assert_called_once()
+
+    def test_saved_config_with_failed_runtime_is_repaired(self):
+        with patch.object(p, 'verify', side_effect=ValueError('web never started')):
+            self.assertTrue(p.needs_update({}, {}, 'test', '0.121.0', {}, {}, {}))
+
+    def test_old_configuration_requires_update(self):
+        with patch.object(p, 'verify') as verify:
+            self.assertTrue(p.needs_update({'old': True}, {}, 'test', '0.121.0', {}, {}, {}))
+            verify.assert_not_called()
+
+
 class RuntimeVerificationTests(unittest.TestCase):
     def setUp(self):
         self.images = {name: 'example/' + name + '@sha256:' + 'a' * 64
