@@ -173,6 +173,30 @@ def app_update(client, app, config):
     raise TimeoutError(f'TrueNAS job {job_id} did not complete in 40 minutes')
 
 
+def api_data_source(app, current):
+    try:
+        mounts = docker_json('inspect', f'ix-{app}-api-1')[0]['Mounts']
+        for mount in mounts:
+            if mount['Destination'] == '/data':
+                return mount['Source']
+    except subprocess.CalledProcessError:
+        # A failed Compose update can remove a container while retaining its volume.
+        for mount in current['services']['api'].get('volumes', []):
+            if isinstance(mount, str):
+                parts = mount.split(':')
+                source, target = parts[:2] if len(parts) >= 2 else ('', '')
+            else:
+                source, target = mount.get('source', ''), mount.get('target', '')
+            if target != '/data':
+                continue
+            if source.startswith('/'):
+                return source
+            definition = current.get('volumes', {}).get(source) or {}
+            name = definition.get('name') or (source if definition.get('external') else f'ix-{app}_{source}')
+            return docker_json('volume', 'inspect', name)[0]['Mountpoint']
+    raise ValueError('Persistent API data volume could not be resolved for backup')
+
+
 def backup(app, current, root):
     stamp = dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     folder = root / app / ('full-' + stamp)
@@ -184,11 +208,9 @@ def backup(app, current, root):
         run(['docker', 'exec', '-i', f'ix-{app}-postgres-1', 'pg_restore', '--list'], stdin=archive, stdout=subprocess.DEVNULL)
     if (folder / 'database.dump').stat().st_size < 100:
         raise ValueError('Database backup is unexpectedly empty')
-    mounts = docker_json('inspect', f'ix-{app}-api-1')[0]['Mounts']
-    for mount in mounts:
-        if mount['Destination'] == '/data':
-            with (folder / 'api-data.tar').open('wb') as output:
-                run(['tar', '--acls', '--xattrs', '--numeric-owner', '-C', mount['Source'], '-cf', '-', '.'], stdout=output)
+    data_source = api_data_source(app, current)
+    with (folder / 'api-data.tar').open('wb') as output:
+        run(['tar', '--acls', '--xattrs', '--numeric-owner', '-C', data_source, '-cf', '-', '.'], stdout=output)
     checksums = '\n'.join(hash_file(path) + '  ' + path.name for path in folder.iterdir() if path.is_file())
     (folder / 'SHA256SUMS').write_text(checksums + '\n')
     print('Recovery bundle', folder, flush=True)
@@ -211,7 +233,7 @@ def prepare_images(images, manifest, version, settings):
     return result, overlays
 
 
-def verify(app, version, images, settings, expected_ids=None):
+def verify(app, version, images, settings, expected_ids=None, *, local_only=False):
     prefix = 'ix-' + app + '-'
     if expected_ids is None:
         services = {'api': 'api', 'web': 'web', 'portal': 'portal', 'binaries-init': 'binaries'}
@@ -229,9 +251,10 @@ def verify(app, version, images, settings, expected_ids=None):
                 raise ValueError('Container is not healthy: ' + service)
         elif not container['State'].get('Running'):
             raise ValueError('Container is not running: ' + service)
-    health = json.loads(fetch(settings['url'] + '/health'))
-    if health.get('status') != 'ok' or health.get('version') != version:
-        raise ValueError('API health/version mismatch')
+    if not local_only:
+        health = json.loads(fetch(settings['url'] + '/health'))
+        if health.get('status') != 'ok' or health.get('version') != version:
+            raise ValueError('API health/version mismatch')
     script = '''const fs=require('fs'),p=require('path');let found=false;
 function visit(d){for(const e of fs.readdirSync(d,{withFileTypes:true})){const f=p.join(d,e.name);if(e.isDirectory())visit(f);else if(f.endsWith('.js')){const s=fs.readFileSync(f,'utf8');if(s.includes('PUBLIC_APP_VERSION') && (s.includes('PUBLIC_APP_VERSION:`'+process.argv[1]+'`')||s.includes('PUBLIC_APP_VERSION:"'+process.argv[1]+'"')))found=true;}}}
 const roots=[...new Set(['/app/dist/client','/app/apps/web/dist/client','/app/node_modules/.pnpm/node_modules/@breeze/web/dist/client'].filter(d=>fs.existsSync(d)).map(d=>fs.realpathSync(d)))];
@@ -241,6 +264,8 @@ if(roots.length!==1)process.exit(1);visit(roots[0]);if(!found)process.exit(1);''
     local_version = subprocess.check_output(['docker', 'exec', prefix + 'api-1', 'node', '-e', api_script, version], text=True).strip().lstrip('v')
     if local_version != version:
         raise ValueError('Local binary volume version mismatch')
+    if local_only:
+        return
     for path in ('/', '/quick', '/portal/'):
         fetch(settings['url'] + path)
     if settings.get('bookcentral_container'):
@@ -252,7 +277,7 @@ def needs_update(current, desired, app, version, images, settings, expected_ids)
     if current != desired:
         return True
     try:
-        verify(app, version, images, settings, expected_ids)
+        verify(app, version, images, settings, expected_ids, local_only=True)
         return False
     except (ValueError, OSError, subprocess.CalledProcessError, urllib.error.URLError):
         # Failed Compose jobs may have saved the target config before starting all services.

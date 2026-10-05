@@ -16,6 +16,18 @@ spec.loader.exec_module(p)
 
 
 class ReconciliationTests(unittest.TestCase):
+    def test_missing_api_container_backup_resolves_preserved_named_volume(self):
+        config = {'services': {'api': {'volumes': ['api_data:/data']}}, 'volumes': {'api_data': {}}}
+        with patch.object(p, 'docker_json', side_effect=[subprocess.CalledProcessError(1, ['docker']),
+                                                        [{'Mountpoint': '/docker/volumes/data/_data'}]]) as docker:
+            self.assertEqual(p.api_data_source('test', config), '/docker/volumes/data/_data')
+            self.assertEqual(docker.call_args.args, ('volume', 'inspect', 'ix-test_api_data'))
+
+    def test_api_backup_requires_persistent_data(self):
+        with patch.object(p, 'docker_json', return_value=[{'Mounts': []}]):
+            with self.assertRaisesRegex(ValueError, 'Persistent API data'):
+                p.api_data_source('test', {})
+
     def test_current_healthy_release_does_not_restart(self):
         with patch.object(p, 'verify') as verify:
             self.assertFalse(p.needs_update({}, {}, 'test', '0.121.0', {}, {}, {}))
@@ -62,6 +74,15 @@ class RuntimeVerificationTests(unittest.TestCase):
 
     def test_complete_current_stack_passes(self):
         self.assertTrue(self.verify().called)
+
+    def test_public_outage_does_not_redeploy_healthy_current_stack(self):
+        with patch.object(p, 'docker_json', side_effect=self.docker), \
+             patch.object(p, 'fetch', side_effect=p.urllib.error.URLError('public outage')) as fetch, \
+             patch.object(p, 'run'), \
+             patch.object(p.subprocess, 'check_output', return_value='0.121.0\n'):
+            self.assertFalse(p.needs_update({}, {}, 'test', '0.121.0', self.images,
+                                           {'url': 'https://example.test'}, None))
+            fetch.assert_not_called()
 
     def test_old_api_health_fails_even_if_healthy(self):
         self.health['version'] = '0.113.0'
