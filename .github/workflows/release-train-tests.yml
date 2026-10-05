@@ -21,3 +21,4 @@ jobs:
           node-version: '22'
       - run: node --test scripts/verify-manifest.test.mjs
       - run: node automation/overlays/test-web-timeout.cjs
+      - run: node automation/overlays/test-workspace-auth.cjs
