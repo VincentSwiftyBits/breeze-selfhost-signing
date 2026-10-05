@@ -1,47 +1,61 @@
-# Breeze release promotion
+# Complete Breeze release promotion
 
-The target release unit is the complete Breeze version: signed installer
-artifacts plus the official API, web, portal, and binaries image digests from
-the same verified upstream release manifest. The GitHub workflow promotes that
-immutable release through Dev, UAT, and Production. Dev runs automatically.
-The `breeze-uat` and `breeze-production` GitHub environments provide the
-approval gates.
+The train reconciles signed releases into Dev, UAT, and Production in that order.
+Detection runs every fifteen minutes and when this repository publishes a release.
+New releases retain the signing environment and its credentials; already signed
+releases retry deployment independently of signing. Application stages progress
+automatically after verification, without deployment approval gates.
 
-The self-hosted runner executes `promote-breeze`, which connects through a
-forced-command SSH key. `runner-command.sh` accepts only the three approved
-environment names and a validated semantic version.
+## Host installation
 
-On TrueNAS, install the host-side files as:
+The root-owned host directory contains `promote-signed-release` (the shell entry
+point), `promote-full-release.py`, `build-overlays.py`, and the complete `overlays/`
+directory. Keep it unwritable by the runner account. The existing forced SSH
+command continues accepting only `promote <dev|uat|production> <X.Y.Z>`.
 
-- `promote-signed-release.sh` ->
-  `/mnt/SwiftyBits/Apps/Breeze_RMM_MSP/Automation/bin/promote-signed-release`
-- `app-update-from-file.py` ->
-  `/mnt/SwiftyBits/Apps/Breeze_RMM_MSP/Automation/bin/app-update-from-file.py`
-- `runner-command.sh` ->
-  `/mnt/SwiftyBits/BreezeAutomationCommand/runner-command`
+Copy `release-train.example.json` to the protected host configuration directory
+as `release-train.json`, using the actual environment URLs and backup directory.
+Live settings and application secrets must never be committed to this repository.
 
-The Python helper deliberately sends the large custom Compose payload over the
-local middleware socket. Passing the expanded configuration as a `sudo`
-command-line argument can be rejected by TrueNAS command auditing.
+## Release verification
 
-Each promotion validates the signed GitHub release, saves the current app
-configuration, creates a recursive ZFS rollback snapshot, applies the release
-contract, waits for the TrueNAS update job, and verifies the live version,
-image parity, and the environment's public health endpoint.
+The promoter validates the organization-signed manifest against the deployment's
+trusted Ed25519 public keys. It requires a stable release and immutable API, web,
+portal, and binary image digests. All artifacts listed in that manifest are
+cached and verified by hash and size before application configuration changes.
 
-Newly published signed manifests include the verified upstream image inventory,
-so one release version can drive the installer and core application rollout.
-Releases created before this contract was added need the separately verified
-official manifest as a compatibility source.
+Version-matched BookCentral and web overlays are built from verified base images.
+Dev's Vendor Hub UI is rebuilt from the manifest's source commit. Overlay tags
+include content-derived identifiers; cached image provenance must match. The
+BookCentral handler authorization tests run during the image build. AI streaming
+keeps its five-minute startup timeout. Unrecognized upstream structures fail
+preflight rather than silently removing custom functionality.
 
-## Customization gate
+Before a changed deployment, the promoter saves a protected Compose configuration,
+a PostgreSQL custom-format dump validated by pg_restore, and an archive of the
+actual mounted API data volume. These replace the old dataset-only snapshot,
+which did not cover the Docker named volumes. Database recovery is manual:
+rolling an application image back does not undo forward schema migrations.
 
-Do not replace a non-official API or web image automatically. A custom core
-image means functionality is still patched into Breeze rather than delivered
-as a sidecar, extension, or upstream feature. Promotion must stop at Dev until
-that capability has either moved out of process or has a version-matched,
-signed overlay image in the release contract.
+Supported TrueNAS app.update applies the configuration while preserving ports,
+secrets, storage, and unrelated services. Verification requires actual running
+image IDs, healthy services, API and baked frontend version parity, readable
+version-matched local binaries, and reachable web, Quick Support, and portal
+pages. Health alone never satisfies promotion. Local group access is preserved
+without making data world-readable. PUBLIC_WEB_URL follows each environment's
+PUBLIC_APP_URL.
 
-The current temporary exceptions are the BookCentral ticket-intake API patch
-and the small Vendor Hub navigation overlay. The Vendor Hub service itself is
-already out of process and does not need rebuilding for each Breeze release.
+## Ordering and recovery
+
+One GitHub deployment concurrency group serializes releases. A host lock also
+serializes direct calls. Older targets are rejected when a newer signed or
+installed version exists. Failed stages block later stages; subsequent detector
+runs retry reconciliation. Protected recovery bundles and per-environment plans
+are retained on the host. Restore database state only after reviewing migrations
+and production writes; the train never silently rolls live data backward.
+
+## Checks
+
+Run `python -m unittest discover -s automation -p 'test_*.py'` with cryptography
+installed, `node --test scripts/verify-manifest.test.mjs`, and actionlint. These
+run in addition to release-time real-image overlay tests and live verification.
