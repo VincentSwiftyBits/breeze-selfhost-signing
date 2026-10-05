@@ -146,6 +146,8 @@ def desired_config(current, version, images, settings):
     for key in ('APP_VERSION', 'BREEZE_VERSION', 'BINARY_VERSION'):
         env[key] = version
     env['PUBLIC_WEB_URL'] = env['PUBLIC_APP_URL']
+    # Schema migrations precede API readiness and can exceed ordinary request health windows.
+    api.setdefault('healthcheck', {})['start_period'] = '10m'
     # Existing persistent volumes use group 1000; add access without widening modes.
     groups = api.setdefault('group_add', [])
     if '1000' not in [str(x) for x in groups]:
@@ -241,6 +243,9 @@ if(roots.length!==1)process.exit(1);visit(roots[0]);if(!found)process.exit(1);''
         raise ValueError('Local binary volume version mismatch')
     for path in ('/', '/quick', '/portal/'):
         fetch(settings['url'] + path)
+    if settings.get('bookcentral_container'):
+        run(['docker', 'exec', '-i', settings['bookcentral_container'], 'python'],
+            input=(HERE / 'bookcentral-smoke.py').read_bytes(), stdout=subprocess.DEVNULL)
 
 
 def main():
