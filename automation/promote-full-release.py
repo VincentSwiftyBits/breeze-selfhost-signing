@@ -145,7 +145,9 @@ def desired_config(current, version, images, settings):
             result['services'][service]['image'] = images[service]
     for key in ('APP_VERSION', 'BREEZE_VERSION', 'BINARY_VERSION'):
         env[key] = version
-    env['PUBLIC_WEB_URL'] = env['PUBLIC_APP_URL']
+    public_url = settings.get('url', env['PUBLIC_APP_URL']).rstrip('/')
+    env['PUBLIC_APP_URL'] = public_url
+    env['PUBLIC_WEB_URL'] = public_url
     # Schema migrations precede API readiness and can exceed ordinary request health windows.
     api.setdefault('healthcheck', {})['start_period'] = '30m'
     # Existing persistent volumes use group 1000; add access without widening modes.
@@ -260,8 +262,8 @@ function visit(d){for(const e of fs.readdirSync(d,{withFileTypes:true})){const f
 const roots=[...new Set(['/app/dist/client','/app/apps/web/dist/client','/app/node_modules/.pnpm/node_modules/@breeze/web/dist/client'].filter(d=>fs.existsSync(d)).map(d=>fs.realpathSync(d)))];
 if(roots.length!==1)process.exit(1);visit(roots[0]);if(!found)process.exit(1);'''
     run(['docker', 'exec', prefix + 'web-1', 'node', '-e', script, version], stdout=subprocess.DEVNULL)
-    api_script = '''const fs=require('fs');if(process.env.APP_VERSION!==process.argv[1]||process.env.BINARY_VERSION!==process.argv[1])process.exit(1);fs.accessSync('/data/binaries/VERSION');console.log(fs.readFileSync('/data/binaries/VERSION','utf8').trim());'''
-    local_version = subprocess.check_output(['docker', 'exec', prefix + 'api-1', 'node', '-e', api_script, version], text=True).strip().lstrip('v')
+    api_script = '''const fs=require('fs');if(process.env.APP_VERSION!==process.argv[1]||process.env.BINARY_VERSION!==process.argv[1]||process.env.PUBLIC_WEB_URL!==process.argv[2]||process.env.PUBLIC_APP_URL!==process.argv[2])process.exit(1);fs.accessSync('/data/binaries/VERSION');console.log(fs.readFileSync('/data/binaries/VERSION','utf8').trim());'''
+    local_version = subprocess.check_output(['docker', 'exec', prefix + 'api-1', 'node', '-e', api_script, version, settings['url']], text=True).strip().lstrip('v')
     if local_version != version:
         raise ValueError('Local binary volume version mismatch')
     if local_only:

@@ -50,5 +50,14 @@ class ReleaseContractTests(unittest.TestCase):
         p.verify_manifest(b'original', signature, public)
         with self.assertRaises(ValueError): p.verify_manifest(b'modified', signature, public)
 
+    def test_environment_public_urls_repair_drift(self):
+        current = {'services': {n: {'image': 'old'} for n in ('api', 'web', 'portal', 'binaries-init')}}
+        current['services']['api']['environment'] = {'PUBLIC_APP_URL': 'https://wrong.example'}
+        desired = p.desired_config(current, '0.121.0', p.image_inventory(self.manifest(), '0.121.0'),
+                                   {'url': 'https://correct.example'})
+        env = desired['services']['api']['environment']
+        self.assertEqual(env['PUBLIC_WEB_URL'], 'https://correct.example')
+        self.assertEqual(env['PUBLIC_APP_URL'], 'https://correct.example')
+
 
 if __name__ == '__main__': unittest.main()
