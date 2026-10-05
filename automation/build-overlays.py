@@ -35,6 +35,10 @@ def main():
         msi=pathlib.Path(spec['signedMsiPath']); msi_sha=spec['signedMsiSha256']
         if not re.fullmatch('[a-f0-9]{64}',msi_sha) or hashlib.sha256(msi.read_bytes()).hexdigest()!=msi_sha:
             raise RuntimeError('Verified signed MSI required for binary initializer')
+        base_config=json.loads(run(['docker','image','inspect',bases['binaries']]))[0]['Config']
+        entrypoint=base_config.get('Entrypoint') or []
+        if len(entrypoint)!=3 or entrypoint[:2]!=['sh','-c'] or '/binaries/* /target/' not in entrypoint[2]:
+            raise RuntimeError('Binary initializer copy layout changed; review before deployment')
         key=digest([bases['binaries'],msi_sha]); tag=f'swiftybits/breeze-binaries:{version}-signed-msi-{key}'
         if not exists(tag,key,version,commit,bases['binaries']):
             ctx=tmp/'binaries'; ctx.mkdir(); shutil.copyfile(msi,ctx/'breeze-agent.msi')
@@ -43,6 +47,9 @@ def main():
             (ctx/'Dockerfile').write_text(f'FROM {bases["binaries"]}\nUSER root\nCOPY breeze-agent.msi /binaries/agent/breeze-agent.msi\nRUN chmod 0644 /binaries/agent/breeze-agent.msi\nUSER {user}\n')
             build(['docker','build','--label',f'io.swiftybits.breeze.overlay-sha={key}','--label',f'io.swiftybits.breeze.base={bases["binaries"]}','--label',f'org.opencontainers.image.version={version}','--label',f'org.opencontainers.image.revision={commit}','-t',tag,str(ctx)])
         result['images']['binaries']=tag; result['provenance']['overlays']['signedWindowsMsi']=msi_sha
+        staged=run(['docker','run','--rm','--network','none','--read-only','--entrypoint','sh',tag,
+                    '-c','sha256sum /binaries/agent/breeze-agent.msi']).split()[0]
+        if staged!=msi_sha: raise RuntimeError('Binary initializer does not contain the verified signed MSI')
         api=tmp/'api'; api.mkdir()
         patch=(OVERLAYS/'bookcentral.js').read_bytes()
         tests=(OVERLAYS/'test-bookcentral.cjs').read_bytes()
