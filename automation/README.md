@@ -64,3 +64,9 @@ run in addition to release-time real-image overlay tests and live verification.
 Set `ai_tool_search: true` for an environment to enable SDK tool discovery. This keeps the full Breeze catalog from exceeding OpenAI's 128-tool request limit. The API overlay preserves tool-reference results across the gateway so discovery can complete its round trip. The builder tests this behavior against the actual upstream bundle before deploying a derived image and fails for an unrecognized layout.
 
 GPT-4.1 nano is a low-cost starter compatible with the current gateway. Newer reasoning models require additional request-parameter compatibility work; a failed model verification must not be overridden by manually claiming tool support. Provider keys, model prices, and feature defaults remain partner settings, and promotions preserve them.
+
+## Workspace authenticated requests
+
+The Workspace extension's web bundle uses the host application's authenticated API client for its three request paths (sources, dashboard summary and dashboard jobs). Cookie-only requests cannot authenticate to the core API. The bridge confines requests to the same-origin `/api/v1/ext/workspace/` namespace and retains the explicit organization query, token refresh, cancellation and existing server authorization checks. It does not grant permissions or expose credentials to another origin.
+
+The builder derives the auth-client asset from the final web image, including custom Dev builds, and fails before deployment if the asset or extension request layout changes. Workspace activation still requires `BREEZE_WORKSPACE_ENABLED=true`, a pgvector-capable database and the appropriate Workspace grants. `BREEZE_AI_WORKSPACE_ENABLED` is a separate hosted-only analysis capability and must remain off on these self-hosted environments.
