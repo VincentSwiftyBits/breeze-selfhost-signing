@@ -59,7 +59,7 @@ jobs:
     if: needs.validate-target.outputs.deploy == 'true'
     name: Promote complete applications to Dev
     runs-on: [self-hosted, linux, x64, swiftybits-truenas]
-    timeout-minutes: 35
+    timeout-minutes: 60
     steps:
       - name: Promote and verify Dev
         env:
@@ -70,7 +70,7 @@ jobs:
     name: Promote complete applications to UAT
     needs: deploy-dev
     runs-on: [self-hosted, linux, x64, swiftybits-truenas]
-    timeout-minutes: 35
+    timeout-minutes: 60
     steps:
       - name: Promote and verify UAT
         env:
@@ -81,7 +81,7 @@ jobs:
     name: Promote complete applications to Production
     needs: deploy-uat
     runs-on: [self-hosted, linux, x64, swiftybits-truenas]
-    timeout-minutes: 35
+    timeout-minutes: 60
     steps:
       - name: Promote and verify Production
         env:

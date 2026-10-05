@@ -147,7 +147,7 @@ def desired_config(current, version, images, settings):
         env[key] = version
     env['PUBLIC_WEB_URL'] = env['PUBLIC_APP_URL']
     # Schema migrations precede API readiness and can exceed ordinary request health windows.
-    api.setdefault('healthcheck', {})['start_period'] = '20m'
+    api.setdefault('healthcheck', {})['start_period'] = '30m'
     # Existing persistent volumes use group 1000; add access without widening modes.
     groups = api.setdefault('group_add', [])
     if '1000' not in [str(x) for x in groups]:
@@ -161,7 +161,7 @@ def desired_config(current, version, images, settings):
 def app_update(client, app, config):
     job_id = client.call('app.update', app, {'custom_compose_config': config})
     print('TrueNAS update job', job_id, flush=True)
-    deadline = time.monotonic() + 1500
+    deadline = time.monotonic() + 2400
     while time.monotonic() < deadline:
         job = client.call('core.get_jobs', [['id', '=', job_id]])[0]
         if job['state'] == 'SUCCESS':
@@ -170,7 +170,7 @@ def app_update(client, app, config):
             # Raw middleware errors can embed Compose secrets: do not print them.
             raise RuntimeError(f'TrueNAS job {job_id} {job["state"]}; inspect protected host logs')
         time.sleep(5)
-    raise TimeoutError(f'TrueNAS job {job_id} did not complete in 25 minutes')
+    raise TimeoutError(f'TrueNAS job {job_id} did not complete in 40 minutes')
 
 
 def backup(app, current, root):
