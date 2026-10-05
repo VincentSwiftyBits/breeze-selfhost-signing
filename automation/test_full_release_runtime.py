@@ -16,6 +16,46 @@ spec.loader.exec_module(p)
 
 
 class ReconciliationTests(unittest.TestCase):
+    def test_offline_retry_requires_verified_recorded_backup_inside_application_root(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder); bundle = root / 'test' / 'full-snapshot'; bundle.mkdir(parents=True)
+            checks = []
+            for name in ('config.json', 'database.dump', 'api-data.tar'):
+                (bundle / name).write_bytes(b'recovery bytes')
+                checks.append(hashlib.sha256(b'recovery bytes').hexdigest() + '  ' + name)
+            (bundle / 'SHA256SUMS').write_text('\n'.join(checks))
+            plan = {'version': '0.121.0', 'sourceCommit': 'a' * 40, 'recoveryBundle': str(bundle)}
+            self.assertEqual(p.recorded_recovery_bundle(plan, root, 'test', '0.121.0', 'a' * 40), bundle.resolve())
+            (bundle / 'database.dump').write_bytes(b'corrupted')
+            with self.assertRaisesRegex(ValueError, 'checksum failed'):
+                p.recorded_recovery_bundle(plan, root, 'test', '0.121.0', 'a' * 40)
+
+    def test_offline_retry_without_recorded_release_backup_fails_closed(self):
+        with self.assertRaisesRegex(ValueError, 'no recorded recovery'):
+            p.recorded_recovery_bundle({}, Path('.'), 'test', '0.121.0', 'a' * 40)
+
+    def test_recorded_backup_cannot_escape_application_root(self):
+        plan = {'version': '0.121.0', 'sourceCommit': 'a' * 40, 'recoveryBundle': '.'}
+        with self.assertRaisesRegex(ValueError, 'outside'):
+            p.recorded_recovery_bundle(plan, Path('backups'), 'test', '0.121.0', 'a' * 40)
+
+    def test_stock_unsigned_msi_is_atomically_replaced_with_verified_signed_bytes(self):
+        with tempfile.TemporaryDirectory() as folder, patch.object(p.os, 'chown', create=True):
+            root = Path(folder)
+            cache = root / 'cache'; cache.mkdir()
+            (cache / 'breeze-agent.msi').write_bytes(b'verified signed package')
+            destination = root / 'binaries' / 'agent'; destination.mkdir(parents=True)
+            (destination / 'breeze-agent.msi').write_bytes(b'unsigned stock')
+            artifact = {'name': 'breeze-agent.msi', 'platformTrust': 'windows-authenticode-required',
+                        'sha256': hashlib.sha256(b'verified signed package').hexdigest()}
+            p.stage_signed_msi(cache, {'assets': [artifact]}, root / 'binaries')
+            self.assertEqual((destination / 'breeze-agent.msi').read_bytes(), b'verified signed package')
+            self.assertFalse((destination / '.breeze-agent.msi.signed-release').exists())
+
+    def test_uncertified_msi_is_not_staged(self):
+        with self.assertRaisesRegex(ValueError, 'not certified'):
+            p.stage_signed_msi(Path('.'), {'assets': [{'name': 'breeze-agent.msi', 'platformTrust': 'none'}]}, Path('.'))
+
     def test_missing_api_container_backup_resolves_preserved_named_volume(self):
         config = {'services': {'api': {'volumes': ['api_data:/data']}}, 'volumes': {'api_data': {}}}
         with patch.object(p, 'docker_json', side_effect=[subprocess.CalledProcessError(1, ['docker']),
@@ -64,13 +104,25 @@ class RuntimeVerificationTests(unittest.TestCase):
     def fetch(self, url):
         return json.dumps(self.health).encode() if url.endswith('/health') else b'page'
 
-    def verify(self):
+    def verify(self, settings=None, redirect=None):
         with patch.object(p, 'docker_json', side_effect=self.docker), \
              patch.object(p, 'fetch', side_effect=self.fetch), \
+             patch.object(p, 'download_redirect', return_value=redirect or f'https://github.com/{p.SIGNED_REPO}/releases/download/v0.121.0/breeze-agent-windows-amd64.exe'), \
              patch.object(p, 'run') as run, \
              patch.object(p.subprocess, 'check_output', return_value='0.121.0\n'):
-            p.verify('test', '0.121.0', self.images, {'url': 'https://example.test'})
+            p.verify('test', '0.121.0', self.images, settings or {'url': 'https://example.test'})
             return run
+
+    def test_old_promoted_agent_download_blocks_release(self):
+        with self.assertRaisesRegex(ValueError, 'Promoted agent download'):
+            self.verify(redirect=f'https://github.com/{p.SIGNED_REPO}/releases/download/v0.113.0/breeze-agent-windows-amd64.exe')
+
+    def test_unsigned_public_msi_blocks_release(self):
+        with self.assertRaisesRegex(ValueError, 'Public MSI download'):
+            self.verify(settings={'url': 'https://example.test', 'signed_msi_sha256': 'a' * 64})
+
+    def test_signed_public_msi_passes(self):
+        self.verify(settings={'url': 'https://example.test', 'signed_msi_sha256': hashlib.sha256(b'page').hexdigest()})
 
     def test_complete_current_stack_passes(self):
         self.assertTrue(self.verify().called)
@@ -122,10 +174,16 @@ class RuntimeVerificationTests(unittest.TestCase):
 class MiddlewareJobTests(unittest.TestCase):
     def test_success_waits_for_terminal_job(self):
         client = Mock()
-        client.call.side_effect = [42, [{'state': 'RUNNING'}], [{'state': 'SUCCESS'}]]
+        client.call.side_effect = [42, [{'state': 'RUNNING'}], [{'state': 'SUCCESS'}], {'state': 'RUNNING'}]
         with patch.object(p.time, 'sleep'):
             p.app_update(client, 'test', {'services': {}})
-        self.assertEqual(client.call.call_count, 3)
+        self.assertEqual(client.call.call_count, 4)
+
+    def test_successful_config_update_starts_a_stopped_application(self):
+        client = Mock()
+        client.call.side_effect = [42, [{'state': 'SUCCESS'}], {'state': 'STOPPED'}, 43, [{'state': 'SUCCESS'}]]
+        p.app_update(client, 'test', {'services': {}})
+        self.assertIn(unittest.mock.call('app.start', 'test'), client.call.call_args_list)
 
     def test_failure_does_not_expose_compose_secrets(self):
         client = Mock()

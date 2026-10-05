@@ -32,11 +32,14 @@ class ReleaseContractTests(unittest.TestCase):
         env = {'APP_VERSION': '0.113.0', 'BREEZE_VERSION': '0.113.0', 'BINARY_VERSION': '0.121.0',
                'PUBLIC_APP_URL': 'https://example.test', 'SECRET': 'preserve'}
         current['services']['api']['environment'] = env
+        current['services']['binaries-init']['pull_policy'] = 'always'
         images = p.image_inventory(self.manifest(), '0.121.0')
         desired = p.desired_config(current, '0.121.0', images, {})
         self.assertEqual(desired['services']['api']['environment']['APP_VERSION'], '0.121.0')
         self.assertEqual(desired['services']['web']['image'], images['web'])
+        self.assertEqual(desired['services']['binaries-init']['pull_policy'], 'never')
         self.assertEqual(desired['services']['api']['environment']['SECRET'], 'preserve')
+        self.assertEqual(desired['services']['api']['environment']['AGENT_AUTO_PROMOTE'], 'true')
         self.assertEqual(env['APP_VERSION'], '0.113.0')
         self.assertEqual(desired['services']['api']['environment']['PUBLIC_WEB_URL'], 'https://example.test')
 

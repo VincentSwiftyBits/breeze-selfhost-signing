@@ -13,6 +13,8 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -140,11 +142,15 @@ def desired_config(current, version, images, settings):
     check_no_downgrade(env, version)
     for service, image_name in [('api', 'api'), ('web', 'web'), ('portal', 'portal'), ('binaries-init', 'binaries')]:
         result['services'][service]['image'] = images[image_name]
+        # The promoter has already pulled/built and frozen each expected image ID.
+        result['services'][service]['pull_policy'] = 'never'
     for service in result['services']:
         if service in images and service not in {'api', 'web', 'portal', 'binaries'}:
             result['services'][service]['image'] = images[service]
+            result['services'][service]['pull_policy'] = 'never'
     for key in ('APP_VERSION', 'BREEZE_VERSION', 'BINARY_VERSION'):
         env[key] = version
+    env['AGENT_AUTO_PROMOTE'] = 'true'
     public_url = settings.get('url', env['PUBLIC_APP_URL']).rstrip('/')
     env['PUBLIC_APP_URL'] = public_url
     env['PUBLIC_WEB_URL'] = public_url
@@ -160,8 +166,7 @@ def desired_config(current, version, images, settings):
     return result
 
 
-def app_update(client, app, config):
-    job_id = client.call('app.update', app, {'custom_compose_config': config})
+def wait_app_job(client, job_id):
     print('TrueNAS update job', job_id, flush=True)
     deadline = time.monotonic() + 2400
     while time.monotonic() < deadline:
@@ -173,6 +178,13 @@ def app_update(client, app, config):
             raise RuntimeError(f'TrueNAS job {job_id} {job["state"]}; inspect protected host logs')
         time.sleep(5)
     raise TimeoutError(f'TrueNAS job {job_id} did not complete in 40 minutes')
+
+
+def app_update(client, app, config):
+    wait_app_job(client, client.call('app.update', app, {'custom_compose_config': config}))
+    # TrueNAS preserves STOPPED state when updating an app whose failed pull removed its containers.
+    if client.call('app.get_instance', app)['state'] == 'STOPPED':
+        wait_app_job(client, client.call('app.start', app))
 
 
 def api_data_source(app, current):
@@ -219,7 +231,82 @@ def backup(app, current, root):
     return folder
 
 
-def prepare_images(images, manifest, version, settings):
+def recorded_recovery_bundle(plan, root, app, version, source_commit):
+    if plan.get('version') != version or plan.get('sourceCommit') != source_commit or not plan.get('recoveryBundle'):
+        raise ValueError('Offline database has no recorded recovery bundle for this release')
+    folder = Path(plan['recoveryBundle']).resolve()
+    if not folder.is_relative_to((root / app).resolve()):
+        raise ValueError('Recovery bundle is outside the protected application backup root')
+    names = set()
+    for entry in (folder / 'SHA256SUMS').read_text().splitlines():
+        digest, name = entry.split('  ', 1)
+        if Path(name).name != name or '/' in name or '\\' in name or not re.fullmatch('[a-f0-9]{64}', digest):
+            raise ValueError('Invalid recorded recovery checksum')
+        if (folder / name).is_symlink() or hash_file(folder / name) != digest:
+            raise ValueError('Recorded recovery bundle checksum failed')
+        names.add(name)
+    if not {'config.json', 'database.dump', 'api-data.tar'} <= names:
+        raise ValueError('Recorded recovery bundle is incomplete')
+    print('Verified recorded recovery bundle; existing database volume will be preserved', flush=True)
+    return folder
+
+
+def database_running(app):
+    try:
+        return docker_json('inspect', f'ix-{app}-postgres-1')[0]['State']['Running']
+    except subprocess.CalledProcessError:
+        return False
+
+
+def save_plan(path, plan):
+    temporary = path.with_suffix('.json.tmp')
+    temporary.write_text(json.dumps(plan, indent=2))
+    temporary.replace(path)
+
+
+def stage_signed_msi(cache, manifest, binary_root):
+    artifact = next(a for a in manifest['assets'] if a['name'] == 'breeze-agent.msi')
+    if artifact.get('platformTrust') != 'windows-authenticode-required':
+        raise ValueError('Windows MSI is not certified by the signed release manifest')
+    source = cache / artifact['name']
+    if hash_file(source) != artifact['sha256']:
+        raise ValueError('Signed MSI cache integrity mismatch')
+    target = binary_root / 'agent' / 'breeze-agent.msi'
+    if target.exists() and hash_file(target) == artifact['sha256']:
+        return artifact
+    target.parent.mkdir(parents=True, exist_ok=True)
+    existing = target.stat() if target.exists() else None
+    temporary = target.with_name('.breeze-agent.msi.signed-release')
+    try:
+        with source.open('rb') as incoming, temporary.open('wb') as output:
+            shutil.copyfileobj(incoming, output)
+            output.flush()
+            os.fsync(output.fileno())
+        os.chown(temporary, existing.st_uid if existing else 1000, existing.st_gid if existing else 1000)
+        os.chmod(temporary, stat.S_IMODE(existing.st_mode) if existing else 0o640)
+        if hash_file(temporary) != artifact['sha256']:
+            raise ValueError('Staged signed MSI integrity mismatch')
+        temporary.replace(target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    print('Staged verified signed Windows MSI', flush=True)
+    return artifact
+
+
+def download_redirect(url):
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+    try:
+        with urllib.request.build_opener(NoRedirect).open(urllib.request.Request(url, method='HEAD'), timeout=30):
+            raise ValueError('Agent download did not redirect to signed release')
+    except urllib.error.HTTPError as exc:
+        if exc.code not in (301, 302, 303, 307, 308):
+            raise
+        return exc.headers['Location']
+
+
+def prepare_images(images, manifest, version, settings, cache):
     for image in images.values():
         run(['docker', 'pull', image], stdout=subprocess.DEVNULL)
     result = dict(images)
@@ -229,6 +316,10 @@ def prepare_images(images, manifest, version, settings):
         raise ValueError('Version-matched customization builder is missing')
     payload = {'version': version, 'sourceCommit': manifest['sourceCommit'], 'images': images,
                'vendorhub': settings.get('vendorhub', False)}
+    msi = next(a for a in manifest['assets'] if a['name'] == 'breeze-agent.msi')
+    if msi.get('platformTrust') != 'windows-authenticode-required':
+        raise ValueError('Windows MSI is not certified by the signed release manifest')
+    payload.update(signedMsiPath=str(cache / 'breeze-agent.msi'), signedMsiSha256=msi['sha256'])
     completed = run(['python3', str(builder)], input=json.dumps(payload).encode(), stdout=subprocess.PIPE)
     overlays = json.loads(completed.stdout)
     result.update(overlays['images'])
@@ -268,6 +359,13 @@ if(roots.length!==1)process.exit(1);visit(roots[0]);if(!found)process.exit(1);''
         raise ValueError('Local binary volume version mismatch')
     if local_only:
         return
+    expected_download = f'https://github.com/{SIGNED_REPO}/releases/download/v{version}/breeze-agent-windows-amd64.exe'
+    if download_redirect(settings['url'] + '/api/v1/agents/download/windows/amd64') != expected_download:
+        raise ValueError('Promoted agent download target does not match signed release')
+    if settings.get('signed_msi_sha256'):
+        served_msi = fetch(settings['url'] + '/api/v1/agents/download/windows/amd64/msi')
+        if hashlib.sha256(served_msi).hexdigest() != settings['signed_msi_sha256']:
+            raise ValueError('Public MSI download does not match verified signed release')
     for path in ('/', '/quick', '/portal/'):
         fetch(settings['url'] + path)
     if settings.get('bookcentral_container'):
@@ -327,17 +425,35 @@ def main():
             (cache / 'release-artifact-manifest.json.ed25519').write_bytes(signature)
             # Verify actual signed installer bytes rather than only an environment string.
             verified_artifacts(manifest, assets, cache)
-            images, overlays = prepare_images(images, manifest, args.version, settings)
+            images, overlays = prepare_images(images, manifest, args.version, settings, cache)
             desired = desired_config(current, args.version, images, settings)
             services = {'api': 'api', 'web': 'web', 'portal': 'portal', 'binaries-init': 'binaries'}
             services.update({name: name for name in images if name not in {'api', 'web', 'portal', 'binaries'}})
             expected_ids = {s: docker_json('image', 'inspect', images[n])[0]['Id'] for s, n in services.items()}
             expected_plan = {'version': args.version, 'sourceCommit': manifest['sourceCommit'], 'images': images,
                              'expectedImageIds': expected_ids, 'overlays': overlays}
-            (cache / (app + '-plan.json')).write_text(json.dumps(expected_plan, indent=2))
+            plan_path = cache / (app + '-plan.json')
+            previous_plan = json.loads(plan_path.read_text()) if plan_path.exists() else {}
+            if previous_plan.get('version') == args.version and previous_plan.get('sourceCommit') == manifest['sourceCommit']:
+                if previous_plan.get('recoveryBundle'):
+                    expected_plan['recoveryBundle'] = previous_plan['recoveryBundle']
+            save_plan(plan_path, expected_plan)
             if not args.verify_only and needs_update(current, desired, app, args.version, images, settings, expected_ids):
-                backup(app, current, Path(settings_all['backup_root']))
+                backup_root = Path(settings_all['backup_root'])
+                if database_running(app):
+                    bundle = backup(app, current, backup_root)
+                else:
+                    bundle = recorded_recovery_bundle(previous_plan, backup_root, app, args.version, manifest['sourceCommit'])
+                expected_plan['recoveryBundle'] = str(bundle)
+                save_plan(plan_path, expected_plan)
                 app_update(client, app, desired)
+            binary_mount = next(m for m in docker_json('inspect', f'ix-{app}-api-1')[0]['Mounts']
+                                if m['Destination'] == '/data/binaries')
+            if not args.verify_only:
+                msi = stage_signed_msi(cache, manifest, Path(binary_mount['Source']))
+            else:
+                msi = next(a for a in manifest['assets'] if a['name'] == 'breeze-agent.msi')
+            settings['signed_msi_sha256'] = msi['sha256']
             deadline = time.monotonic() + 600
             last = None
             while time.monotonic() < deadline:

@@ -31,7 +31,19 @@ def main():
         if not re.fullmatch(r'[a-z0-9./_-]+@sha256:[0-9a-f]{64}',base): raise ValueError('Immutable image digest required')
     result={'images':{},'provenance':{'sourceCommit':commit,'upstreamImages':bases,'overlays':{}}}
     with tempfile.TemporaryDirectory(prefix='breeze-overlays-') as tmp:
-        tmp=pathlib.Path(tmp); api=tmp/'api'; api.mkdir()
+        tmp=pathlib.Path(tmp)
+        msi=pathlib.Path(spec['signedMsiPath']); msi_sha=spec['signedMsiSha256']
+        if not re.fullmatch('[a-f0-9]{64}',msi_sha) or hashlib.sha256(msi.read_bytes()).hexdigest()!=msi_sha:
+            raise RuntimeError('Verified signed MSI required for binary initializer')
+        key=digest([bases['binaries'],msi_sha]); tag=f'swiftybits/breeze-binaries:{version}-signed-msi-{key}'
+        if not exists(tag,key,version,commit,bases['binaries']):
+            ctx=tmp/'binaries'; ctx.mkdir(); shutil.copyfile(msi,ctx/'breeze-agent.msi')
+            user=run(['docker','image','inspect',bases['binaries'],'--format','{{.Config.User}}']).strip() or 'root'
+            if not re.fullmatch(r'[A-Za-z0-9_:-]+',user): raise RuntimeError('Base binaries image has unexpected runtime user')
+            (ctx/'Dockerfile').write_text(f'FROM {bases["binaries"]}\nUSER root\nCOPY breeze-agent.msi /binaries/agent/breeze-agent.msi\nRUN chmod 0644 /binaries/agent/breeze-agent.msi\nUSER {user}\n')
+            build(['docker','build','--label',f'io.swiftybits.breeze.overlay-sha={key}','--label',f'io.swiftybits.breeze.base={bases["binaries"]}','--label',f'org.opencontainers.image.version={version}','--label',f'org.opencontainers.image.revision={commit}','-t',tag,str(ctx)])
+        result['images']['binaries']=tag; result['provenance']['overlays']['signedWindowsMsi']=msi_sha
+        api=tmp/'api'; api.mkdir()
         patch=(OVERLAYS/'bookcentral.js').read_bytes()
         tests=(OVERLAYS/'test-bookcentral.cjs').read_bytes()
         key=digest([bases['api'],patch,tests]); tag=f'swiftybits-breeze-api:{version}-integrations-{key}'
