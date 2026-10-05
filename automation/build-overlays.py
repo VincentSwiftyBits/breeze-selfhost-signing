@@ -53,13 +53,17 @@ def main():
         api=tmp/'api'; api.mkdir()
         patch=(OVERLAYS/'bookcentral.js').read_bytes()
         tests=(OVERLAYS/'test-bookcentral.cjs').read_bytes()
-        key=digest([bases['api'],patch,tests]); tag=f'swiftybits-breeze-api:{version}-integrations-{key}'
+        gateway_patch=(OVERLAYS/'openai-tool-search.cjs').read_bytes()
+        gateway_tests=(OVERLAYS/'test-openai-tool-search.cjs').read_bytes()
+        key=digest([bases['api'],patch,tests,gateway_patch,gateway_tests]); tag=f'swiftybits-breeze-api:{version}-integrations-{key}'
         if not exists(tag,key,version,commit,bases['api']):
             user=run(['docker','image','inspect',bases['api'],'--format','{{.Config.User}}']).strip() or 'root'
             if not re.fullmatch(r'[A-Za-z0-9_:-]+',user): raise RuntimeError('Base API image has unexpected runtime user')
             (api/'bookcentral.js').write_bytes(patch)
             (api/'test-bookcentral.cjs').write_bytes(tests)
-            (api/'Dockerfile').write_text(f'FROM {bases["api"]}\nUSER root\nCOPY bookcentral.js test-bookcentral.cjs /tmp/\nRUN bundle=$(find /app/dist /app/apps/api/dist -name index.cjs 2>/dev/null); node /tmp/test-bookcentral.cjs "$bundle" && node /tmp/bookcentral.js && node --check "$bundle" && rm /tmp/bookcentral.js /tmp/test-bookcentral.cjs\nUSER {user}\n')
+            (api/'openai-tool-search.cjs').write_bytes(gateway_patch)
+            (api/'test-openai-tool-search.cjs').write_bytes(gateway_tests)
+            (api/'Dockerfile').write_text(f'FROM {bases["api"]}\nUSER root\nCOPY bookcentral.js test-bookcentral.cjs openai-tool-search.cjs test-openai-tool-search.cjs /tmp/\nRUN bundle=$(find /app/dist /app/apps/api/dist -name index.cjs 2>/dev/null); node /tmp/test-bookcentral.cjs "$bundle" && node /tmp/bookcentral.js && node /tmp/test-openai-tool-search.cjs "$bundle" --baseline && node /tmp/openai-tool-search.cjs "$bundle" && node /tmp/test-openai-tool-search.cjs "$bundle" && node --check "$bundle" && rm /tmp/bookcentral.js /tmp/test-bookcentral.cjs /tmp/openai-tool-search.cjs /tmp/test-openai-tool-search.cjs\nUSER {user}\n')
             build(['docker','build','--label',f'io.swiftybits.breeze.overlay-sha={key}','--label',f'io.swiftybits.breeze.base={bases["api"]}','--label',f'org.opencontainers.image.version={version}','--label',f'org.opencontainers.image.revision={commit}','-t',tag,str(api)])
         result['images']['api']=tag; result['provenance']['overlays']['bookcentral']=key
         if spec.get('vendorhub'):
