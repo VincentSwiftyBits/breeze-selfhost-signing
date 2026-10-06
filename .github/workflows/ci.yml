@@ -39,6 +39,8 @@ jobs:
 
       - name: Verifier self-test
         run: node scripts/verify-manifest.test.mjs
+      - name: Distribution metadata self-test
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
 
       - name: Committed official key sanity check
         run: |

@@ -360,6 +360,9 @@ jobs:
           # $ErrorActionPreference does not turn a non-zero *exit* from an
           # external script into a terminating error — only a thrown exception.
           if ($LASTEXITCODE -ne 0) { throw "build-msi.ps1 failed with exit code $LASTEXITCODE" }
+          New-Item -ItemType Directory -Force -Path "attest" | Out-Null
+          $builtMsiEdition = if ($editionArgs.ContainsKey("Edition")) { "self-host" } else { "legacy" }
+          Set-Content -Path "attest/windows-msi-edition.txt" -Value $builtMsiEdition -Encoding utf8
 
       - name: Sign MSI (Azure Artifact Signing)
         if: inputs.signing-mode == 'azure-artifact-signing' && inputs.dry-run == false
@@ -487,7 +490,9 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: attestation-windows
-          path: attest/windows.tsv
+          path: |
+            attest/windows.tsv
+            attest/windows-msi-edition.txt
           if-no-files-found: error
           retention-days: 7
 
@@ -932,7 +937,10 @@ jobs:
           import hashlib
           import json
           import os
+          import sys
           from pathlib import Path
+          sys.path.insert(0, "scripts")
+          from manifest_asset_metadata import distribution_metadata
 
           release_dir = Path("release-assets")
           attest_dir = Path("attest")
@@ -992,6 +1000,14 @@ jobs:
           official_trust = {
               a["name"]: a.get("platformTrust") for a in official.get("assets", [])
           }
+          built_msi_edition = None
+          if windows_ran:
+              edition_attestation = attest_dir / "windows-msi-edition.txt"
+              if not edition_attestation.is_file():
+                  raise SystemExit("Windows MSI build edition attestation is missing")
+              built_msi_edition = edition_attestation.read_text(encoding="utf-8-sig").strip()
+              if built_msi_edition not in ("self-host", "legacy"):
+                  raise SystemExit("Windows MSI build edition attestation is invalid")
           required_image_repositories = {
               "api": "ghcr.io/lanternops/breeze/api",
               "binaries": "ghcr.io/lanternops/breeze/binaries",
@@ -1076,6 +1092,10 @@ jobs:
                   "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                   "size": path.stat().st_size,
                   "platformTrust": trust,
+                  **distribution_metadata(
+                      official.get("assets", []), name,
+                      built_msi_edition=built_msi_edition,
+                  ),
               })
 
           manifest = {
