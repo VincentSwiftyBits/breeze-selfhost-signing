@@ -368,6 +368,10 @@ if(roots.length!==1)process.exit(1);visit(roots[0]);if(!found)process.exit(1);''
         served_msi = fetch(settings['url'] + '/api/v1/agents/download/windows/amd64/msi')
         if hashlib.sha256(served_msi).hexdigest() != settings['signed_msi_sha256']:
             raise ValueError('Public MSI download does not match verified signed release')
+    for os_name, expected_hash in settings.get('helper_installer_sha256', {}).items():
+        served_helper = fetch(settings['url'] + f'/api/v1/agents/download/helper/{os_name}/amd64')
+        if hashlib.sha256(served_helper).hexdigest() != expected_hash:
+            raise ValueError('Public Helper installer does not match verified signed release: ' + os_name)
     for path in ('/', '/quick', '/portal/'):
         fetch(settings['url'] + path)
     if settings.get('bookcentral_container'):
@@ -456,6 +460,15 @@ def main():
             else:
                 msi = next(a for a in manifest['assets'] if a['name'] == 'breeze-agent.msi')
             settings['signed_msi_sha256'] = msi['sha256']
+            helper_names = {'windows': 'breeze-helper-windows.msi',
+                            'darwin': 'breeze-helper-macos.dmg',
+                            'linux': 'breeze-helper-linux.AppImage'}
+            settings['helper_installer_sha256'] = {}
+            for os_name, filename in helper_names.items():
+                matches = [a for a in manifest['assets'] if a['name'] == filename]
+                if len(matches) != 1 or matches[0].get('edition') != 'self-host' or matches[0].get('intendedUse') == 'signing-input':
+                    raise ValueError('Helper installer distribution metadata invalid: ' + filename)
+                settings['helper_installer_sha256'][os_name] = matches[0]['sha256']
             deadline = time.monotonic() + 600
             last = None
             while time.monotonic() < deadline:

@@ -124,6 +124,14 @@ class RuntimeVerificationTests(unittest.TestCase):
     def test_signed_public_msi_passes(self):
         self.verify(settings={'url': 'https://example.test', 'signed_msi_sha256': hashlib.sha256(b'page').hexdigest()})
 
+    def test_stale_public_helper_blocks_release(self):
+        with self.assertRaisesRegex(ValueError, 'Public Helper installer'):
+            self.verify(settings={'url': 'https://example.test', 'helper_installer_sha256': {'windows': 'a' * 64}})
+
+    def test_verified_public_helpers_pass(self):
+        self.verify(settings={'url': 'https://example.test', 'helper_installer_sha256':
+                              {os_name: hashlib.sha256(b'page').hexdigest() for os_name in ('windows', 'darwin', 'linux')}})
+
     def test_complete_current_stack_passes(self):
         self.assertTrue(self.verify().called)
 
