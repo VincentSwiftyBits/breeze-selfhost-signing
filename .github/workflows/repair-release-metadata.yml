@@ -1,0 +1,74 @@
+name: Repair signed release distribution metadata
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Existing signed release version, without leading v
+        required: true
+        type: string
+permissions:
+  contents: write
+concurrency:
+  group: sign-release-${{ inputs.version }}
+  cancel-in-progress: false
+jobs:
+  repair:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Download existing release and verified official manifest
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:VERSION -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$') { throw 'Invalid version' }
+          New-Item -ItemType Directory -Path existing,official,backup,repaired | Out-Null
+          gh release download "v$env:VERSION" --repo $env:GITHUB_REPOSITORY --dir existing
+          if ($LASTEXITCODE -ne 0) { throw 'Existing release download failed' }
+          gh release download "v$env:VERSION" --repo lanternops/breeze --dir official --pattern 'release-artifact-manifest.json*'
+          if ($LASTEXITCODE -ne 0) { throw 'Official manifest download failed' }
+          Copy-Item existing/release-artifact-manifest.json,existing/release-artifact-manifest.json.ed25519 backup/
+          node scripts/verify-manifest.mjs verify --manifest official/release-artifact-manifest.json --signature official/release-artifact-manifest.json.ed25519 --key official-release-key.pub --repository lanternops/breeze --release "v$env:VERSION"
+          if ($LASTEXITCODE -ne 0) { throw 'Official signature verification failed' }
+      - name: Save original signature pair for rollback
+        uses: actions/upload-artifact@v4
+        with:
+          name: original-signed-manifest-${{ inputs.version }}
+          path: backup/*
+          if-no-files-found: error
+          retention-days: 90
+      - name: Verify existing signature, inspect MSI edition, repair and sign
+        shell: pwsh
+        env:
+          RELEASE_MANIFEST_ED25519_PRIVATE_KEY: ${{ secrets.RELEASE_MANIFEST_ED25519_PRIVATE_KEY }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msi = (Resolve-Path existing/breeze-agent.msi).Path
+          $installer = New-Object -ComObject WindowsInstaller.Installer
+          $db = $installer.OpenDatabase($msi, 0)
+          $view = $db.OpenView("SELECT ``Value`` FROM ``Property`` WHERE ``Property``='ProductName'")
+          $view.Execute()
+          $record = $view.Fetch()
+          if (-not $record -or $record.StringData(1) -ne 'Breeze Agent (Self-Hosted)') { throw 'MSI ProductName does not prove self-host edition' }
+          $view.Close()
+          @{ edition = 'self-host'; sha256 = (Get-FileHash $msi -Algorithm SHA256).Hash.ToLowerInvariant() } | ConvertTo-Json | Set-Content msi-evidence.json -Encoding utf8
+          node scripts/sign-repaired-manifest.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Metadata repair/signature verification failed' }
+      - name: Replace only manifest and signature
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # During pair replacement verifiers fail closed; binaries are untouched.
+          gh release upload "v$env:VERSION" repaired/release-artifact-manifest.json --repo $env:GITHUB_REPOSITORY --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'Manifest upload failed; original pair is in rollback artifact' }
+          gh release upload "v$env:VERSION" repaired/release-artifact-manifest.json.ed25519 --repo $env:GITHUB_REPOSITORY --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'Signature upload failed; restore original pair from rollback artifact' }
